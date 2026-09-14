@@ -47,6 +47,8 @@ both behaviors with one hotkey and restores everything when you toggle back off.
 
 > 🎵 One thing the mod can't do for you: it keeps the stream steady and unfiltered, but the
 > *music itself* still has to reach your microphone somehow. A virtual cable is the clean way.
+> Programs such as [Logitech Mixline](https://www.logitechg.com/software/mixline) or
+> [VB-Audio](https://vb-audio.com/) are recommended for routing music into the microphone input.
 
 ## 🩺 Troubleshooting
 
@@ -68,6 +70,7 @@ both behaviors with one hotkey and restores everything when you toggle back off.
 
 - BigDJ changes the voice-processing behavior; it does not route audio into the microphone.
 - Send your music to the input selected by Big Walk using a virtual audio cable, Voicemeeter, or speakers.
+- Programs such as [Logitech Mixline](https://www.logitechg.com/software/mixline) or [VB-Audio](https://vb-audio.com/) are recommended for managing this audio routing.
 - Check the game's microphone/input selection and verify that the input meter responds to the music.
 
 ### The build fails with MSB3027 or a locked DLL
