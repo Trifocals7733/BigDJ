@@ -19,7 +19,7 @@ both behaviors with one hotkey and restores everything when you toggle back off.
 
 ## 📦 Requirements
 
-- **Big Walk** (Steam) with **BepInEx 6 (IL2CPP)** installed
+- **Big Walk** ([Steam](https://store.steampowered.com/app/1478500/Big_Walk/)) with **[BepInEx 6 (IL2CPP)](https://builds.bepinex.dev/projects/bepinex_be)** installed
 - [**ModSettingsMenu**](https://thunderstore.io/c/big-walk/p/Ice_Box_Studio_BigWalk/ModSettingsMenu/) ≥ 1.1.0 (hard dependency — the settings UI lives there)
 
 ## 🚀 Install
@@ -73,6 +73,10 @@ MSB3027 (locked DLL).
   your menu values, with the game's originals snapshotted first.
 - Toggling off (or unloading) writes back the stashed trigger mode and DSP values — the voice
   pipeline is left exactly as found.
+
+## 📥 More mods
+
+Find my other mods on [Nexus Mods](https://www.nexusmods.com/profile/xJonder).
 
 ## 📄 License
 
