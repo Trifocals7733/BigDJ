@@ -120,6 +120,8 @@ MSB3027 (locked DLL).
 
 Find my other mods on [Nexus Mods](https://www.nexusmods.com/profile/xJonder).
 
+You can also find BigDJ on [Nexus Mods](https://www.nexusmods.com/bigwalk/mods/46).
+
 ## 🙏 Special thanks
 
 Special thanks to the legend **Arthurian**. His hard work hosting lobbies inspired this mod.
