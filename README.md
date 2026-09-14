@@ -19,7 +19,8 @@ both behaviors with one hotkey and restores everything when you toggle back off.
 
 - Keeps voice transmission open while Music Mode is active.
 - Reduces speech-focused denoise and background removal that can damage music.
-- Snapshots and restores your normal voice settings when toggled off.
+- Optional DSP presets and a tiny on-screen status readout.
+- Snapshots and restores your normal voice settings when toggled off, and logs the restored values as proof.
 - Configurable hotkey, cleanup settings, and diagnostics logging.
 
 ---
@@ -60,7 +61,7 @@ both behaviors with one hotkey and restores everything when you toggle back off.
 
 - Make sure both **Enabled** and **MusicMode** are on.
 - Press the configured toggle key (F9 by default) after entering the game.
-- Keep **Denoise** set to **Disabled** and **BackgroundRemoval** set to **off**.
+- Keep **DspPreset** on **Untouched** (or **Denoise** Disabled and **BackgroundRemoval** off with a Custom preset).
 - Turn on **Diagnostics** to verify that Music Mode remains active.
 
 ### Music is not audible to other players
@@ -84,11 +85,13 @@ both behaviors with one hotkey and restores everything when you toggle back off.
 **Music**
 | Setting | Default | What it does |
 |---|---|---|
-| MusicMode | off | The effect itself: continuous transmit + relaxed speech cleanup. |
+| MusicMode | off | The effect itself: continuous transmit to nearby players + relaxed speech cleanup. (Proximity range still applies.) |
+| DspPreset | Untouched | One-switch cleanup combo: Untouched (nothing), Light Cleanup (mild background removal), or Custom (the three knobs below). |
 | Denoise | Disabled | Background-hiss removal during music mode. Keep Disabled for music — higher settings dull the sound. |
 | BackgroundRemoval | off | Background-sound removal during music mode. Keep off, or the music itself fades in and out. |
 | BackgroundRemovalAmount | 0 | How strongly background sounds are removed. Only matters if the above is on. |
-| Diagnostics | off | Logs a status line once per second while music mode is on, so you can confirm it stays in always-transmit. |
+| Diagnostics | off | Logs a status line once per second while music mode is on, so you can confirm it stays in always-transmit. Transmit start/stop lines are always logged. |
+| Overlay | off | Tiny on-screen readout whenever this is on: music state, transmitting state, triggers, DSP. |
 
 **Input**
 | Setting | Default | What it does |
@@ -115,6 +118,8 @@ MSB3027 (locked DLL).
   your menu values, with the game's originals snapshotted first.
 - Toggling off (or unloading) writes back the stashed trigger mode and DSP values — the voice
   pipeline is left exactly as found.
+- The `DspPreset` selector resolves to the three cleanup values each frame (Custom falls through
+  to the knobs).
 
 ## 📥 More mods
 
