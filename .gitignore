@@ -39,3 +39,6 @@ Desktop.ini
 # Game-local files (never commit your install into the repo)
 LogOutput.log
 *.cfg
+
+# Release files
+release/
