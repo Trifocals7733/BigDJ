@@ -1,4 +1,12 @@
+<p align="center">
+  <img src="https://repository-images.githubusercontent.com/1370149594/1cc97433-95cb-4339-bf84-609ab0a89f6c" alt="BigDJ banner">
+</p>
+
 # 🎧 BigDJ
+
+[![License](https://img.shields.io/github/license/Trifocals7733/BigDJ?style=flat-square)](https://github.com/Trifocals7733/BigDJ/blob/main/LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/Trifocals7733/BigDJ?style=flat-square&label=latest%20release)](https://github.com/Trifocals7733/BigDJ/releases/latest)
+[![Supported game](https://img.shields.io/badge/Big%20Walk%20%7C%20BepInEx%206-supported-6f42c1?style=flat-square)](https://store.steampowered.com/app/1478500/Big_Walk/)
 
 **Music mode for Big Walk voice chat.** Play music through proximity voice as a steady,
 unfiltered stream — no more volume pumping while the game treats your song like talking.
@@ -6,6 +14,13 @@ unfiltered stream — no more volume pumping while the game treats your song lik
 Big Walk's voice chat is tuned for speech: it only transmits when it hears a voice, and it
 scrubs the audio with noise suppression. Great for talking, terrible for music. BigDJ flips
 both behaviors with one hotkey and restores everything when you toggle back off.
+
+## ✨ Features
+
+- Keeps voice transmission open while Music Mode is active.
+- Reduces speech-focused denoise and background removal that can damage music.
+- Snapshots and restores your normal voice settings when toggled off.
+- Configurable hotkey, cleanup settings, and diagnostics logging.
 
 ---
 
@@ -31,6 +46,33 @@ both behaviors with one hotkey and restores everything when you toggle back off.
 
 > 🎵 One thing the mod can't do for you: it keeps the stream steady and unfiltered, but the
 > *music itself* still has to reach your microphone somehow. A virtual cable is the clean way.
+
+## 🩺 Troubleshooting
+
+### BigDJ does not appear in Mod Settings
+
+- Confirm that the game is using **BepInEx 6 (IL2CPP)**, not a different BepInEx build.
+- Confirm `BigDJ.dll` is in `BepInEx/plugins/BigDJ/`.
+- Confirm [ModSettingsMenu](https://thunderstore.io/c/big-walk/p/Ice_Box_Studio_BigWalk/ModSettingsMenu/) ≥ 1.1.0 is installed in `BepInEx/plugins/ModSettingsMenu/`.
+- Check the BepInEx log for a missing dependency or load error.
+
+### Music still cuts in and out
+
+- Make sure both **Enabled** and **MusicMode** are on.
+- Press the configured toggle key (F9 by default) after entering the game.
+- Keep **Denoise** set to **Disabled** and **BackgroundRemoval** set to **off**.
+- Turn on **Diagnostics** to verify that Music Mode remains active.
+
+### Music is not audible to other players
+
+- BigDJ changes the voice-processing behavior; it does not route audio into the microphone.
+- Send your music to the input selected by Big Walk using a virtual audio cable, Voicemeeter, or speakers.
+- Check the game's microphone/input selection and verify that the input meter responds to the music.
+
+### The build fails with MSB3027 or a locked DLL
+
+- Close Big Walk before running `dotnet build`.
+- If the game is already closed, check for another process still holding `BigDJ.dll`, then build again.
 
 ## ⚙️ Settings
 
