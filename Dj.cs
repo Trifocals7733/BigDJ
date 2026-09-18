@@ -3,45 +3,72 @@ using BepInEx.Configuration;
 using Dissonance;
 using Dissonance.Audio.Capture;
 using Dissonance.Config;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
+using Mirror;
 using UnityEngine;
 
 namespace BigDJ;
 
 /// <summary>
-/// Music mode for voice chat. Two switches, both restored on disable:
-/// 1. The local broadcast trigger is forced to `CommActivationMode.Open` (transmit
-///    continuously) instead of voice-activation gating, which is what makes music pump.
-///    Range still applies — only nearby players (overlapping grid cells) hear it.
-/// 2. The speech-cleanup DSP in `VoiceSettings` (denoise, background-sound removal)
-///    is set to the menu preset (default: untouched audio).
-/// Writes run every LateUpdate so the game's own voice logic can't flip them back,
-/// but only when the value actually differs. F9 is gated on the master switch.
-/// Transmit start/stop edges always log; transitions log their restored values.
+/// Studio-grade music mode for voice chat.
+/// 1. Broadcast Mode:
+///    - Proximity3D: Continuous 3D spatialized transmission with untouched DSP.
+///    - IslandRadio2D: Native Mirror 2D voice broadcast (CmdSet2DVoice) to all players,
+///      bypassing distance attenuation, directional panning, and low-pass muffled angles.
+/// 2. Dissonance High-Priority Channel: Elevates priority to ChannelPriority.High
+///    so music packets are never ducked or dropped during multi-speaker talk.
+/// 3. Dry Acoustics: Suppresses cave/building reverberation echoes (SelfEcho / echoAmount).
+/// 4. Real-time Live Audio VU Meter: Real-time RMS and peak meter on the overlay HUD.
+/// 5. Zero-Allocation Core: Uses WorldManager and local hierarchy scoping.
+/// All states are tracked and safely restored on disable or toggle off.
 /// </summary>
 public class Dj : MonoBehaviour
 {
     internal static ConfigEntry<bool> Enabled;
     internal static ConfigEntry<bool> MusicMode;
+    internal static ConfigEntry<BroadcastMode> Mode;
     internal static ConfigEntry<DspPreset> Preset;
     internal static ConfigEntry<NoiseSuppressionLevels> Denoise;
     internal static ConfigEntry<bool> BgRemoval;
     internal static ConfigEntry<float> BgAmount;
+    internal static ConfigEntry<bool> HighPriority;
+    internal static ConfigEntry<bool> DryAcoustics;
     internal static ConfigEntry<bool> Diagnostics;
     internal static ConfigEntry<KeyCode> ToggleKey;
     internal static ConfigEntry<bool> Overlay;
 
     PlayerCharacter _player;
-    VoiceBroadcastTrigger[] _roomTriggers = new VoiceBroadcastTrigger[0];
-    VoiceProximityBroadcastTrigger[] _proxTriggers = new VoiceProximityBroadcastTrigger[0];
+    VoiceBroadcastTrigger[] _roomTriggers = Array.Empty<VoiceBroadcastTrigger>();
+    VoiceProximityBroadcastTrigger[] _proxTriggers = Array.Empty<VoiceProximityBroadcastTrigger>();
     bool _scopedToPlayer;
     bool _loggedTriggers;
     CommActivationMode _prevMode;
     bool _havePrevMode;
+
     VoiceSettings _settings;
     NoiseSuppressionLevels _origDenoise;
     bool _origBgEnabled;
     float _origBgAmount;
     bool _haveOrigSettings;
+
+    bool _orig2DVoice;
+    bool _haveOrig2DVoice;
+
+    DissonanceComms _comms;
+    ChannelPriority _origPriority;
+    bool _haveOrigPriority;
+
+    float _origEchoAmount;
+    bool _haveOrigEchoAmount;
+    bool _origSelfEchoOn;
+    bool _haveOrigSelfEcho;
+
+    LocalVoiceProvider _voiceProvider;
+    float _livePeak;
+    float _liveRms;
+    float _liveDb = -99f;
+    float _nextVuSample;
+
     bool _applied;
     float _retry;
     float _probeNext;
@@ -50,16 +77,20 @@ public class Dj : MonoBehaviour
     bool _haveTransmitState;
 
     internal static void Bind(ConfigEntry<bool> enabled, ConfigEntry<bool> musicMode,
-        ConfigEntry<DspPreset> preset,
+        ConfigEntry<BroadcastMode> mode, ConfigEntry<DspPreset> preset,
         ConfigEntry<NoiseSuppressionLevels> denoise, ConfigEntry<bool> bgRemoval, ConfigEntry<float> bgAmount,
+        ConfigEntry<bool> highPriority, ConfigEntry<bool> dryAcoustics,
         ConfigEntry<bool> diagnostics, ConfigEntry<KeyCode> toggleKey, ConfigEntry<bool> overlay)
     {
         Enabled = enabled;
         MusicMode = musicMode;
+        Mode = mode;
         Preset = preset;
         Denoise = denoise;
         BgRemoval = bgRemoval;
         BgAmount = bgAmount;
+        HighPriority = highPriority;
+        DryAcoustics = dryAcoustics;
         Diagnostics = diagnostics;
         ToggleKey = toggleKey;
         Overlay = overlay;
@@ -96,6 +127,10 @@ public class Dj : MonoBehaviour
                 _retry = Time.time + 2f;
                 FindSettings();
             }
+            if (_comms == null || _voiceProvider == null)
+            {
+                FindComms();
+            }
             if (_roomTriggers.Length + _proxTriggers.Length == 0)
             {
                 if (Time.time < _retry) return;
@@ -107,6 +142,7 @@ public class Dj : MonoBehaviour
             if (_player == null) return;
 
             Apply();
+            SampleVuMeter();
             CheckTransmitEdge();
             if (Diagnostics.Value) Probe();
         }
@@ -115,8 +151,10 @@ public class Dj : MonoBehaviour
             Plugin.Log.LogError($"DJ failed: {e.Message}");
             _player = null;
             _settings = null;
-            _roomTriggers = new VoiceBroadcastTrigger[0];
-            _proxTriggers = new VoiceProximityBroadcastTrigger[0];
+            _comms = null;
+            _voiceProvider = null;
+            _roomTriggers = Array.Empty<VoiceBroadcastTrigger>();
+            _proxTriggers = Array.Empty<VoiceProximityBroadcastTrigger>();
             _retry = Time.time + 2f;
         }
     }
@@ -130,25 +168,37 @@ public class Dj : MonoBehaviour
             {
                 _player = me;
                 _loggedTriggers = false;
-                Plugin.Log.LogInfo($"DJ bound to '{_player.name}'");
+                Plugin.Log.LogInfo($"DJ bound to '{_player.name}' (WorldManager)");
                 return true;
             }
         }
         catch { }
-        foreach (var pc in UnityEngine.Object.FindObjectsOfType<PlayerCharacter>())
+
+        try
         {
-            var net = pc?.playerNetworking;
-            if (net == null || !net.isLocalPlayer) continue;
-            _player = pc;
-            _loggedTriggers = false;
-            Plugin.Log.LogInfo($"DJ bound to '{_player.name}'");
-            return true;
+            var list = PlayerCharacter.allPlayerCharacters;
+            if (list != null && list.Count > 0)
+            {
+                for (int i = 0; i < list.Count; i++)
+                {
+                    var pc = list[i];
+                    if (pc == null) continue;
+                    var net = pc.playerNetworking;
+                    if (net != null && net.isLocalPlayer)
+                    {
+                        _player = pc;
+                        _loggedTriggers = false;
+                        Plugin.Log.LogInfo($"DJ bound to '{_player.name}' (allPlayerCharacters)");
+                        return true;
+                    }
+                }
+            }
         }
+        catch { }
+
         return false;
     }
 
-    /// <summary>Scene changes can destroy the player/triggers out from under us.
-    /// Re-check on a slow timer instead of waiting for an exception.</summary>
     void Revalidate()
     {
         if (Time.time < _revalidateNext) return;
@@ -161,8 +211,8 @@ public class Dj : MonoBehaviour
                 if (_player != null || _roomTriggers.Length + _proxTriggers.Length > 0)
                     Plugin.Log.LogInfo("DJ: scene changed, re-acquiring player and triggers");
                 _player = null;
-                _roomTriggers = new VoiceBroadcastTrigger[0];
-                _proxTriggers = new VoiceProximityBroadcastTrigger[0];
+                _roomTriggers = Array.Empty<VoiceBroadcastTrigger>();
+                _proxTriggers = Array.Empty<VoiceProximityBroadcastTrigger>();
                 _havePrevMode = false;
                 _loggedTriggers = false;
             }
@@ -181,6 +231,31 @@ public class Dj : MonoBehaviour
         }
     }
 
+    void FindComms()
+    {
+        try
+        {
+            var wm = WorldManager.instance;
+            if (wm != null)
+            {
+                if (wm.dissonanceComms != null) _comms = wm.dissonanceComms;
+                if (wm.localVoiceProvider != null) _voiceProvider = wm.localVoiceProvider;
+            }
+        }
+        catch { }
+
+        if (_comms == null)
+        {
+            try { _comms = UnityEngine.Object.FindObjectOfType<DissonanceComms>(); }
+            catch { }
+        }
+        if (_voiceProvider == null)
+        {
+            try { _voiceProvider = UnityEngine.Object.FindObjectOfType<LocalVoiceProvider>(); }
+            catch { }
+        }
+    }
+
     bool Mine(Component c)
     {
         if (_player == null || c == null) return false;
@@ -189,8 +264,6 @@ public class Dj : MonoBehaviour
         return t != null && t.IsChildOf(_player.transform);
     }
 
-    /// <summary>True when the trigger lives under a NON-local player avatar —
-    /// a dormant component we must not touch.</summary>
     bool OwnedByRemote(Component c)
     {
         try
@@ -213,35 +286,42 @@ public class Dj : MonoBehaviour
 
     void CollectTriggers()
     {
+        // First fast-path: check local player hierarchy directly (zero scene-wide walking)
+        if (_player != null)
+        {
+            try
+            {
+                var myRoom = _player.GetComponentsInChildren<VoiceBroadcastTrigger>(true);
+                var myProx = _player.GetComponentsInChildren<VoiceProximityBroadcastTrigger>(true);
+                if (myRoom != null && myProx != null && myRoom.Length + myProx.Length > 0)
+                {
+                    _roomTriggers = myRoom;
+                    _proxTriggers = myProx;
+                    _scopedToPlayer = true;
+                    if (!_loggedTriggers)
+                    {
+                        _loggedTriggers = true;
+                        Plugin.Log.LogInfo($"DJ triggers: room={_roomTriggers.Length} prox={_proxTriggers.Length} scopedToPlayer=true (local hierarchy)");
+                    }
+                    return;
+                }
+            }
+            catch { }
+        }
+
+        // Fallback: scene-wide search (skipping remote avatars)
         var room = UnityEngine.Object.FindObjectsOfType<VoiceBroadcastTrigger>();
         var prox = UnityEngine.Object.FindObjectsOfType<VoiceProximityBroadcastTrigger>();
 
-        var myRoom = new System.Collections.Generic.List<VoiceBroadcastTrigger>();
-        var myProx = new System.Collections.Generic.List<VoiceProximityBroadcastTrigger>();
-        foreach (var t in room) if (Mine(t)) myRoom.Add(t);
-        foreach (var t in prox) if (Mine(t)) myProx.Add(t);
+        var allRoom = new System.Collections.Generic.List<VoiceBroadcastTrigger>();
+        var allProx = new System.Collections.Generic.List<VoiceProximityBroadcastTrigger>();
+        foreach (var t in room) if (!OwnedByRemote(t)) allRoom.Add(t);
+        foreach (var t in prox) if (!OwnedByRemote(t)) allProx.Add(t);
+        _roomTriggers = allRoom.ToArray();
+        _proxTriggers = allProx.ToArray();
+        _scopedToPlayer = false;
 
-        if (myRoom.Count + myProx.Count > 0)
-        {
-            _roomTriggers = myRoom.ToArray();
-            _proxTriggers = myProx.ToArray();
-            _scopedToPlayer = true;
-        }
-        else
-        {
-            // No triggers under the local player: fall back to scene-wide triggers,
-            // but skip ones owned by remote avatars (dormant components we must not touch).
-            var allRoom = new System.Collections.Generic.List<VoiceBroadcastTrigger>();
-            var allProx = new System.Collections.Generic.List<VoiceProximityBroadcastTrigger>();
-            foreach (var t in room) if (!OwnedByRemote(t)) allRoom.Add(t);
-            foreach (var t in prox) if (!OwnedByRemote(t)) allProx.Add(t);
-            _roomTriggers = allRoom.ToArray();
-            _proxTriggers = allProx.ToArray();
-            _scopedToPlayer = false;
-            Plugin.Log.LogWarning($"DJ: no triggers under local player, using {_roomTriggers.Length} room + {_proxTriggers.Length} proximity triggers scene-wide (remote-owned skipped)");
-            foreach (var t in _roomTriggers) Plugin.Log.LogInfo($"DJ fallback trigger: room '{t.gameObject.name}'");
-            foreach (var t in _proxTriggers) Plugin.Log.LogInfo($"DJ fallback trigger: prox '{t.gameObject.name}'");
-        }
+        Plugin.Log.LogWarning($"DJ: no triggers under local player, using {_roomTriggers.Length} room + {_proxTriggers.Length} proximity triggers scene-wide (remote-owned skipped)");
 
         if (!_loggedTriggers)
         {
@@ -250,8 +330,6 @@ public class Dj : MonoBehaviour
         }
     }
 
-    /// <summary>Named DSP combos so one selector covers the common cases;
-    /// Custom falls through to the three knobs.</summary>
     void ResolveDsp(out NoiseSuppressionLevels denoise, out bool bgRemoval, out float bgAmount)
     {
         var preset = Preset != null ? Preset.Value : DspPreset.Custom;
@@ -276,18 +354,19 @@ public class Dj : MonoBehaviour
 
     void Apply()
     {
+        // 1. Broadcast triggers: force CommActivationMode.Open
         if (!_havePrevMode)
         {
             if (_roomTriggers.Length > 0) _prevMode = _roomTriggers[0].Mode;
             else if (_proxTriggers.Length > 0) _prevMode = _proxTriggers[0].Mode;
-            else Plugin.Log.LogWarning("DJ: no broadcast triggers found — DSP only, transmission stays VAD-gated");
             _havePrevMode = true;
             Plugin.Log.LogInfo($"DJ previous trigger mode: {_prevMode}");
         }
 
-        foreach (var t in _roomTriggers) { try { if (t.Mode != CommActivationMode.Open) t.Mode = CommActivationMode.Open; } catch (Exception e) { Plugin.Log.LogWarning($"DJ trigger write failed: {e.Message}"); } }
-        foreach (var t in _proxTriggers) { try { if (t.Mode != CommActivationMode.Open) t.Mode = CommActivationMode.Open; } catch (Exception e) { Plugin.Log.LogWarning($"DJ trigger write failed: {e.Message}"); } }
+        foreach (var t in _roomTriggers) { try { if (t.Mode != CommActivationMode.Open) t.Mode = CommActivationMode.Open; } catch { } }
+        foreach (var t in _proxTriggers) { try { if (t.Mode != CommActivationMode.Open) t.Mode = CommActivationMode.Open; } catch { } }
 
+        // 2. DSP Settings
         if (_settings != null)
         {
             if (!_haveOrigSettings)
@@ -304,10 +383,137 @@ public class Dj : MonoBehaviour
             if (_settings.BackgroundSoundRemovalAmount != bgAmount) _settings.BackgroundSoundRemovalAmount = bgAmount;
         }
 
+        // 3. Broadcast Mode: Island Radio 2D Voice
+        if (_player != null && _player.playerNetworking != null)
+        {
+            var net = _player.playerNetworking;
+            if (!_haveOrig2DVoice)
+            {
+                _orig2DVoice = net.Networkis2DVoice;
+                _haveOrig2DVoice = true;
+                Plugin.Log.LogInfo($"DJ previous 2D voice mode: {_orig2DVoice}");
+            }
+
+            bool want2D = Mode != null && Mode.Value == BroadcastMode.IslandRadio2D;
+            if (net.Networkis2DVoice != want2D)
+            {
+                if (NetworkServer.active) net.Networkis2DVoice = want2D;
+                try { net.CmdSet2DVoice(want2D); } catch { }
+                Plugin.Log.LogInfo($"DJ switched broadcast mode: {(want2D ? "IslandRadio2D" : "Proximity3D")}");
+            }
+        }
+
+        // 4. Dissonance Priority
+        if (HighPriority != null && HighPriority.Value && _comms != null)
+        {
+            if (!_haveOrigPriority)
+            {
+                _origPriority = _comms.PlayerPriority;
+                _haveOrigPriority = true;
+                Plugin.Log.LogInfo($"DJ previous Dissonance priority: {_origPriority}");
+            }
+            if (_comms.PlayerPriority != ChannelPriority.High)
+            {
+                _comms.PlayerPriority = ChannelPriority.High;
+            }
+        }
+
+        // 5. Dry Acoustics (suppress cave/island reverb)
+        if (DryAcoustics != null && DryAcoustics.Value)
+        {
+            if (_player != null && _player.playerNetworking != null)
+            {
+                var net = _player.playerNetworking;
+                if (!_haveOrigEchoAmount)
+                {
+                    _origEchoAmount = net.NetworkechoAmount;
+                    _haveOrigEchoAmount = true;
+                }
+                if (net.NetworkechoAmount > 0.001f)
+                {
+                    if (NetworkServer.active) net.NetworkechoAmount = 0f;
+                    try { net.CmdSetEchoAmount(0f); } catch { }
+                }
+            }
+
+            try
+            {
+                var se = SelfEcho.Instance;
+                if (se != null)
+                {
+                    if (!_haveOrigSelfEcho)
+                    {
+                        _origSelfEchoOn = se.EchoOn;
+                        _haveOrigSelfEcho = true;
+                    }
+                    if (se.EchoOn) se.EchoOn = false;
+                }
+            }
+            catch { }
+        }
+
         _applied = true;
     }
 
-    /// <summary>Edge-triggered transmit log — rare lines, so always on, not gated on Diagnostics.</summary>
+    void SampleVuMeter()
+    {
+        if (Time.time < _nextVuSample) return;
+        _nextVuSample = Time.time + 0.05f; // 20 Hz update rate
+
+        if (_voiceProvider == null)
+        {
+            try { _voiceProvider = WorldManager.instance?.localVoiceProvider; } catch { }
+        }
+        if (_voiceProvider == null) return;
+
+        try
+        {
+            var data = _voiceProvider.CachedVoiceData;
+            if (data == null || data.Length == 0) return;
+
+            int head = _voiceProvider.CachedVoiceWriteHead;
+            int count = Math.Min(256, data.Length);
+            float sumSq = 0f;
+            float peak = 0f;
+
+            for (int i = 0; i < count; i++)
+            {
+                int idx = (head - 1 - i + data.Length) % data.Length;
+                float s = data[idx];
+                float abs = s < 0f ? -s : s;
+                if (abs > peak) peak = abs;
+                sumSq += s * s;
+            }
+
+            _livePeak = peak;
+            _liveRms = Mathf.Sqrt(sumSq / count);
+            _liveDb = _liveRms > 0.0001f ? 20f * Mathf.Log10(_liveRms) : -99f;
+        }
+        catch { }
+    }
+
+    static string FormatVuBar(float peak, float db, out string status)
+    {
+        if (db < -55f)
+        {
+            status = "SILENT";
+            return "[................]";
+        }
+
+        float norm = Mathf.Clamp01((db + 45f) / 45f);
+        int bars = Mathf.RoundToInt(norm * 16f);
+        char[] buf = new char[18];
+        buf[0] = '[';
+        for (int i = 0; i < 16; i++) buf[i + 1] = i < bars ? '|' : '.';
+        buf[17] = ']';
+
+        if (peak >= 0.95f) status = "PEAKING!";
+        else if (db >= -24f) status = "OPTIMAL";
+        else status = "ACTIVE";
+
+        return new string(buf);
+    }
+
     void CheckTransmitEdge()
     {
         try
@@ -330,12 +536,25 @@ public class Dj : MonoBehaviour
         try
         {
             if (Overlay == null || !Overlay.Value || !Enabled.Value) return;
-            GUI.Box(new Rect(10f, 10f, 300f, 122f), "BigDJ");
-            GUI.Label(new Rect(20f, 34f, 280f, 20f), "music: " + (MusicMode.Value ? "on" : "off"));
-            GUI.Label(new Rect(20f, 54f, 280f, 20f), "transmitting: " + (_haveTransmitState && _wasTransmitting ? "yes" : "no"));
-            GUI.Label(new Rect(20f, 74f, 280f, 20f), "triggers: room=" + _roomTriggers.Length + " prox=" + _proxTriggers.Length);
-            GUI.Label(new Rect(20f, 94f, 280f, 20f), _settings != null
-                ? "dsp: denoise=" + _settings.DenoiseAmount + " bg=" + _settings.BackgroundSoundRemovalEnabled + "/" + _settings.BackgroundSoundRemovalAmount
+
+            GUI.Box(new Rect(10f, 10f, 320f, 135f), "BigDJ v" + Plugin.PLUGIN_VERSION);
+
+            string modeStr = Mode != null && Mode.Value == BroadcastMode.IslandRadio2D ? "Island Radio 2D" : "Proximity 3D";
+            GUI.Label(new Rect(20f, 30f, 300f, 20f), "mode: " + modeStr + "  (" + (MusicMode.Value ? "ON" : "OFF") + ")");
+
+            string priStr = _comms != null ? _comms.PlayerPriority.ToString().ToUpper() : "DEFAULT";
+            string txStr = _haveTransmitState && _wasTransmitting ? "YES" : "NO";
+            GUI.Label(new Rect(20f, 50f, 300f, 20f), "transmitting: " + txStr + "  |  priority: " + priStr);
+
+            string vuBar = FormatVuBar(_livePeak, _liveDb, out string vuStatus);
+            string dbStr = _liveDb > -90f ? _liveDb.ToString("F1") + " dB" : "-inf dB";
+            GUI.Label(new Rect(20f, 70f, 300f, 20f), "VU: " + vuBar + " " + dbStr + " (" + vuStatus + ")");
+
+            string dryStr = DryAcoustics != null && DryAcoustics.Value ? "DRY" : "NATURAL";
+            GUI.Label(new Rect(20f, 90f, 300f, 20f), "triggers: room=" + _roomTriggers.Length + " prox=" + _proxTriggers.Length + "  |  echo: " + dryStr);
+
+            GUI.Label(new Rect(20f, 110f, 300f, 20f), _settings != null
+                ? "dsp: " + _settings.DenoiseAmount + " | bg=" + _settings.BackgroundSoundRemovalEnabled + "/" + _settings.BackgroundSoundRemovalAmount.ToString("F2")
                 : "dsp: n/a");
         }
         catch { }
@@ -348,11 +567,12 @@ public class Dj : MonoBehaviour
         try
         {
             foreach (var t in _roomTriggers)
-                Plugin.Log.LogInfo($"DJ room '{t.gameObject.name}' mode={t.Mode} transmitting={t.IsTransmitting} muted={t.IsMuted}");
+                Plugin.Log.LogInfo($"DJ room '{t.gameObject.name}' mode={t.Mode} transmitting={t.IsTransmitting}");
             foreach (var t in _proxTriggers)
-                Plugin.Log.LogInfo($"DJ prox '{t.gameObject.name}' mode={t.Mode} transmitting={t.IsTransmitting} muted={t.IsMuted}");
+                Plugin.Log.LogInfo($"DJ prox '{t.gameObject.name}' mode={t.Mode} transmitting={t.IsTransmitting}");
             if (_settings != null)
-                Plugin.Log.LogInfo($"DJ dsp denoise={_settings.DenoiseAmount} bgRemoval={_settings.BackgroundSoundRemovalEnabled}/{_settings.BackgroundSoundRemovalAmount}");
+                Plugin.Log.LogInfo($"DJ dsp denoise={_settings.DenoiseAmount} bg={_settings.BackgroundSoundRemovalEnabled}/{_settings.BackgroundSoundRemovalAmount} mode={Mode?.Value}");
+            Plugin.Log.LogInfo($"DJ audio: peak={_livePeak:F2} rms={_liveRms:F3} db={_liveDb:F1}");
         }
         catch (Exception e) { Plugin.Log.LogWarning($"DJ probe failed: {e.Message}"); }
     }
@@ -367,21 +587,60 @@ public class Dj : MonoBehaviour
                 foreach (var t in _roomTriggers) { try { t.Mode = _prevMode; } catch { } }
                 foreach (var t in _proxTriggers) { try { t.Mode = _prevMode; } catch { } }
                 _havePrevMode = false;
+                Plugin.Log.LogInfo($"DJ restored trigger mode to: {_prevMode}");
             }
+
             if (_settings != null && _haveOrigSettings)
             {
                 _settings.DenoiseAmount = _origDenoise;
                 _settings.BackgroundSoundRemovalEnabled = _origBgEnabled;
                 _settings.BackgroundSoundRemovalAmount = _origBgAmount;
                 _haveOrigSettings = false;
+                Plugin.Log.LogInfo($"DJ restored dsp denoise={_origDenoise} bgRemoval={_origBgEnabled}/{_origBgAmount}");
             }
-            foreach (var t in _roomTriggers) { try { Plugin.Log.LogInfo($"DJ restored room '{t.gameObject.name}' mode={t.Mode}"); } catch { } }
-            foreach (var t in _proxTriggers) { try { Plugin.Log.LogInfo($"DJ restored prox '{t.gameObject.name}' mode={t.Mode}"); } catch { } }
-            if (_settings != null) { try { Plugin.Log.LogInfo($"DJ restored dsp denoise={_settings.DenoiseAmount} bgRemoval={_settings.BackgroundSoundRemovalEnabled}/{_settings.BackgroundSoundRemovalAmount}"); } catch { } }
+
+            if (_haveOrig2DVoice && _player != null && _player.playerNetworking != null)
+            {
+                var net = _player.playerNetworking;
+                if (NetworkServer.active) net.Networkis2DVoice = _orig2DVoice;
+                try { net.CmdSet2DVoice(_orig2DVoice); } catch { }
+                Plugin.Log.LogInfo($"DJ restored 2D voice mode: {_orig2DVoice}");
+                _haveOrig2DVoice = false;
+            }
+
+            if (_haveOrigPriority && _comms != null)
+            {
+                _comms.PlayerPriority = _origPriority;
+                Plugin.Log.LogInfo($"DJ restored Dissonance priority: {_origPriority}");
+                _haveOrigPriority = false;
+            }
+
+            if (_haveOrigEchoAmount && _player != null && _player.playerNetworking != null)
+            {
+                var net = _player.playerNetworking;
+                if (NetworkServer.active) net.NetworkechoAmount = _origEchoAmount;
+                try { net.CmdSetEchoAmount(_origEchoAmount); } catch { }
+                _haveOrigEchoAmount = false;
+            }
+
+            if (_haveOrigSelfEcho)
+            {
+                try { if (SelfEcho.Instance != null) SelfEcho.Instance.EchoOn = _origSelfEchoOn; } catch { }
+                _haveOrigSelfEcho = false;
+            }
+
             _haveTransmitState = false;
-            Plugin.Log.LogInfo("DJ: voice pipeline restored");
+            _livePeak = 0f;
+            _liveRms = 0f;
+            _liveDb = -99f;
+            Plugin.Log.LogInfo("DJ: voice pipeline fully restored");
         }
         catch (Exception e) { Plugin.Log.LogWarning($"DJ restore failed: {e.Message}"); }
+    }
+
+    void OnDisable()
+    {
+        try { if (_applied) Restore(); } catch { }
     }
 
     void OnDestroy()

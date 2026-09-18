@@ -8,6 +8,12 @@ using UnityEngine;
 
 namespace BigDJ;
 
+internal enum BroadcastMode
+{
+    Proximity3D,
+    IslandRadio2D
+}
+
 internal enum DspPreset
 {
     Custom,
@@ -21,7 +27,7 @@ public class Plugin : BasePlugin
 {
     public const string PLUGIN_GUID = "walker.bigdj";
     public const string PLUGIN_NAME = "BigDJ";
-    public const string PLUGIN_VERSION = "1.1.0";
+    public const string PLUGIN_VERSION = "1.2.0";
 
     internal static new ManualLogSource Log;
 
@@ -33,11 +39,20 @@ public class Plugin : BasePlugin
             new ConfigDescription("Master switch for BigDJ. Turn this off to fully disable the mod and return to normal voice chat.",
                 null, ModSettingsTags.Section("General", order: 10), ModSettingsTags.Entry(order: 10)));
         var musicMode = Config.Bind("Music", "MusicMode", false,
-            new ConfigDescription("When on, your voice transmits continuously and speech cleanup is turned down, so music plays as a steady stream to nearby players instead of cutting in and out. (Proximity range still applies — distant players won't hear it.) Turn off to go back to normal voice chat.",
+            new ConfigDescription("When on, your voice transmits continuously and speech cleanup is turned down, so music plays as a steady stream instead of cutting in and out. Turn off to go back to normal voice chat.",
                 null, ModSettingsTags.Section("Music", order: 20), ModSettingsTags.Entry(order: 10)));
+        var broadcastMode = Config.Bind("Music", "BroadcastMode", BroadcastMode.Proximity3D,
+            new ConfigDescription("Audio spatialization mode. Proximity3D = normal local 3D positional audio. IslandRadio2D = direct 2D broadcast to all players via native 2D voice (no distance falloff, no directional muffling).",
+                null, ModSettingsTags.Entry(order: 12)));
         var preset = Config.Bind("Music", "DspPreset", DspPreset.Untouched,
             new ConfigDescription("One-switch sound cleanup combo for music mode. Untouched = no cleanup at all; Light Cleanup = mild background-sound removal; Custom = use the three knobs below instead.",
                 null, ModSettingsTags.Entry(order: 15)));
+        var highPriority = Config.Bind("Music", "HighPriority", true,
+            new ConfigDescription("Elevates Dissonance packet priority to High during music mode so songs won't duck or drop packets when multiple players talk.",
+                null, ModSettingsTags.Entry(order: 17)));
+        var dryAcoustics = Config.Bind("Music", "DryAcoustics", true,
+            new ConfigDescription("Suppresses environmental cave reverb and island echo while music mode is active for clean studio audio.",
+                null, ModSettingsTags.Entry(order: 19)));
         var denoise = Config.Bind("Music", "Denoise", NoiseSuppressionLevels.Disabled,
             new ConfigDescription("How much background hiss to remove while music mode is on. Keep it on Disabled for music — higher settings can dull the sound.",
                 null,
@@ -50,7 +65,7 @@ public class Plugin : BasePlugin
                 new AcceptableValueRange<float>(0f, 1f),
                 ModSettingsTags.Entry(order: 40, sliderStep: 0.05d)));
         var overlay = Config.Bind("Music", "Overlay", false,
-            new ConfigDescription("Tiny on-screen readout whenever this is on: music state, transmitting state, trigger count, DSP values. Display only, no interaction.",
+            new ConfigDescription("On-screen HUD with live VU meter readout: music state, transmitting state, audio level in dB, and DSP values.",
                 null, ModSettingsTags.Entry(order: 80)));
         var diagnostics = Config.Bind("Music", "Diagnostics", false,
             new ConfigDescription("Writes a status line to the game log once per second while music mode is on, so you can confirm it stays in always-transmit mode.",
@@ -62,11 +77,11 @@ public class Plugin : BasePlugin
         ModSettingsRegistry.Register(PLUGIN_GUID, new ModSettingsModOptions
         {
             Name = "Big DJ",
-            Description = "Music mode for voice chat: steady transmission with speech cleanup turned down.",
+            Description = "Music mode for voice chat: steady transmission with Island Radio 2D, high priority, and live VU monitoring.",
             Version = PLUGIN_VERSION
         });
 
-        Dj.Bind(enabled, musicMode, preset, denoise, bgRemoval, bgAmount, diagnostics, toggleKey, overlay);
+        Dj.Bind(enabled, musicMode, broadcastMode, preset, denoise, bgRemoval, bgAmount, highPriority, dryAcoustics, diagnostics, toggleKey, overlay);
         AddComponent<Dj>(); // BasePlugin.AddComponent also injects the type
 
         Log.LogInfo($"BigDJ v{PLUGIN_VERSION} loaded.");

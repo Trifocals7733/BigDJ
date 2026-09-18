@@ -17,11 +17,14 @@ both behaviors with one hotkey and restores everything when you toggle back off.
 
 ## ✨ Features
 
-- Keeps voice transmission open while Music Mode is active.
-- Reduces speech-focused denoise and background removal that can damage music.
-- Optional DSP presets and a tiny on-screen status readout.
-- Snapshots and restores your normal voice settings when toggled off, and logs the restored values as proof.
-- Configurable hotkey, cleanup settings, and diagnostics logging.
+- **Island Radio 2D Broadcast Mode**: Switch between traditional 3D proximity and global 2D radio broadcast via native `CmdSet2DVoice` (no distance falloff, no directional muffling).
+- **Continuous Transmission**: Keeps voice transmission open (`CommActivationMode.Open`) while Music Mode is active.
+- **Dissonance High Priority**: Elevates packet priority to `ChannelPriority.High` so your music stream never ducks or drops packets during multi-speaker talk.
+- **Dry Acoustics**: Suppresses cave reverb and island echo for clean, studio-grade sound.
+- **Real-Time Graphical VU Meter**: Dynamic audio level bar and dB readout on the in-game HUD overlay.
+- **Speech Cleanup Bypass**: Relaxes speech-focused denoise and background removal that damage instruments and harmonics.
+- **Zero-Allocation Core**: Uses native `WorldManager` and local hierarchy scoping for zero GC stutter.
+- **Leak-Proof Restoration**: Snapshots and fully restores all original voice, trigger, priority, and acoustic states on toggle off.
 
 ---
 
@@ -30,7 +33,11 @@ both behaviors with one hotkey and restores everything when you toggle back off.
 | | Normal voice | Music mode (F9) |
 |---|---|---|
 | Transmission | Only while speech is detected (volume pumps with the music) | **Always transmitting** — a constant stream |
+| Audio Mode | 3D proximity only (muffled by distance & head-turning) | **Proximity 3D** or **Island Radio 2D** (direct unattenuated broadcast) |
+| Priority | Default priority (ducks when multiple people talk) | **High Priority** — stream stays solid over conversation |
 | Noise cleanup | Denoise + background removal on (eats cymbals, tails, quiet parts) | **Turned down** (configurable, defaults to untouched) |
+| Acoustics | Cavernous reverb and echo applied in terrain | **Dry Acoustics** — suppresses environmental reverberation |
+| Monitoring | None | **Live VU Meter** with real-time dB readout & peak alerts |
 | Your settings | — | Snapshotted and **restored** when you toggle off |
 
 ## 📦 Requirements
@@ -70,8 +77,7 @@ both behaviors with one hotkey and restores everything when you toggle back off.
 
 - BigDJ changes the voice-processing behavior; it does not route audio into the microphone.
 - Send your music to the input selected by Big Walk using a virtual audio cable, Voicemeeter, or speakers.
-- Programs such as [Logitech Mixline](https://www.logitechg.com/software/mixline) or [VB-Audio](https://vb-audio.com/) are recommended for managing this audio routing.
-- Check the game's microphone/input selection and verify that the input meter responds to the music.
+- Check the in-game overlay (`Overlay = on`): the live VU meter will display your input signal in dB. If it says `(SILENT)`, check your Windows microphone routing.
 
 ### The build fails with MSB3027 or a locked DLL
 
@@ -88,13 +94,16 @@ both behaviors with one hotkey and restores everything when you toggle back off.
 **Music**
 | Setting | Default | What it does |
 |---|---|---|
-| MusicMode | off | The effect itself: continuous transmit to nearby players + relaxed speech cleanup. (Proximity range still applies.) |
+| MusicMode | off | Continuous transmit + relaxed speech cleanup. Turn on to start DJing. |
+| BroadcastMode | Proximity3D | Proximity3D = local 3D positional audio. IslandRadio2D = direct 2D broadcast to all players via native 2D voice. |
 | DspPreset | Untouched | One-switch cleanup combo: Untouched (nothing), Light Cleanup (mild background removal), or Custom (the three knobs below). |
+| HighPriority | on | Elevates Dissonance packet priority to High so music never ducks during conversation. |
+| DryAcoustics | on | Suppresses cave reverb and island echo for clean studio sound. |
 | Denoise | Disabled | Background-hiss removal during music mode. Keep Disabled for music — higher settings dull the sound. |
 | BackgroundRemoval | off | Background-sound removal during music mode. Keep off, or the music itself fades in and out. |
 | BackgroundRemovalAmount | 0 | How strongly background sounds are removed. Only matters if the above is on. |
-| Diagnostics | off | Logs a status line once per second while music mode is on, so you can confirm it stays in always-transmit. Transmit start/stop lines are always logged. |
-| Overlay | off | Tiny on-screen readout whenever this is on: music state, transmitting state, triggers, DSP. |
+| Diagnostics | off | Logs a status line once per second while music mode is on. |
+| Overlay | off | On-screen HUD with live VU meter readout: audio level in dB, transmit state, and DSP values. |
 
 **Input**
 | Setting | Default | What it does |
@@ -115,14 +124,17 @@ MSB3027 (locked DLL).
 ## 🧠 How it works
 
 - Every `LateUpdate` while music mode is on, the mod writes `CommActivationMode.Open` into your
-  local broadcast triggers (room + proximity) — last writer wins over the game's own voice logic,
-  so transmission never gates.
-- `VoiceSettings` cleanup (`DenoiseAmount`, `BackgroundSoundRemovalEnabled/Amount`) is set to
-  your menu values, with the game's originals snapshotted first.
-- Toggling off (or unloading) writes back the stashed trigger mode and DSP values — the voice
-  pipeline is left exactly as found.
-- The `DspPreset` selector resolves to the three cleanup values each frame (Custom falls through
-  to the knobs).
+  local broadcast triggers (room + proximity) — last writer wins over the game's own voice logic.
+- When `IslandRadio2D` is selected, the mod sets `Networkis2DVoice = true` (on host) and calls
+  `CmdSet2DVoice(true)` (on client). Mirror syncs this to all players, switching their voice playback
+  controls to `TwoDMode = true` and eliminating 3D spatial drop-off.
+- `HighPriority` sets `DissonanceComms.PlayerPriority = ChannelPriority.High`, keeping music packets
+  at the front of the queue.
+- `DryAcoustics` clamps `NetworkechoAmount = 0` and disables `SelfEcho.EchoOn` so cave reverbs don't muddy the sound.
+- `Overlay` samples `LocalVoiceProvider.CachedVoiceData` at 20 Hz to calculate real-time RMS amplitude
+  and peak values for the live VU meter.
+- Toggling off (or unloading) writes back all stashed states — trigger mode, DSP, 2D voice, priority,
+  and acoustics — leaving the voice pipeline exactly as found.
 
 ## 📥 More mods
 

@@ -3,8 +3,8 @@
   <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
     <AssemblyName>BigDJ</AssemblyName>
-    <Product>Constant-stream music mode for voice chat</Product>
-    <Version>1.1.0</Version>
+    <Product>Studio-grade music mode for voice chat</Product>
+    <Version>1.2.0</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
     <RootNamespace>BigDJ</RootNamespace>
